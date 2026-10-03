@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pose Camera</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500&display=swap" rel="stylesheet" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; background: #000; overflow: hidden; font-family: system-ui, sans-serif; }
+
+    .stage { position: relative; width: 100vw; height: 100vh; }
+
+    /* 自撮りなので鏡像表示 */
+    #camera {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+    }
+
+    /* 中央の人物イラスト */
+    #buddy {
+      position: absolute;
+      left: 50%; top: 5vh; /* 下は画面外にはみ出してOK */
+      transform: translateX(-50%);
+      height: 150vh;
+      pointer-events: none;
+      filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.35));
+    }
+
+    /* 赤い紐（質問画面・カメラ画面で共通） */
+    :root { --thread: #D8262B; }
+    .shared-defs { position: absolute; width: 0; height: 0; }
+
+    /* カメラ画面の外枠 */
+    #frame {
+      position: absolute; inset: 44px;
+      width: calc(100% - 88px); height: calc(100% - 88px);
+      overflow: visible;
+      pointer-events: none;
+      z-index: 5;
+    }
+
+    /* 撮影される写真のまとまり */
+    #photo {
+      position: absolute; inset: 0;
+      overflow: hidden;
+    }
+    /* 印刷中：質問画面と同じ背景の上に縮めた写真を載せる */
+    #photo.printing {
+      z-index: 11;
+      outline: 14px solid #fffaf5;
+      box-shadow: 0 24px 60px rgba(110, 50, 45, 0.35);
+    }
+
+    /* カメラ画面の撮影カウント */
+    #shot-count {
+      position: absolute; inset: 0;
+      /* 中央だと月老の顔に重なるので上部に置く */
+      display: flex; align-items: flex-start; justify-content: center;
+      padding-top: 9vh;
+      font: 500 clamp(72px, 11vw, 150px) 'Shippori Mincho', serif;
+      line-height: 1;
+      color: #fff;
+      text-shadow: 0 0 24px rgba(216, 38, 43, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
+      pointer-events: none;
+      z-index: 6;
+    }
+    #shot-count[hidden] { display: none; }
+
+    /* シャッターのフラッシュ */
+    #flash {
+      position: absolute; inset: 0;
+      background: #fff;
+      opacity: 0;
+      pointer-events: none;
+      z-index: 7;
+    }
+
+    /* 最初に流すイントロ動画（カメラ画面の上に被せる） */
+    #intro {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      object-fit: contain;
+      background: #000;
+      z-index: 10;
+    }
+    #intro[hidden] { display: none; }
+
+    /* イントロ後の質問画面 */
+    /* 桃色がかった生成りの紙＋紅の霧。赤い糸だけを強く、ほかは淡く */
+    #question {
+      --paper: #F6E3D6;
+      --ink: #5a2e2c;
+      position: absolute; inset: 0;
+      overflow: hidden;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: space-between;
+      padding: 16vh 16px 12vh;
+      background:
+        radial-gradient(ellipse 60% 45% at 20% 30%, rgba(236, 160, 158, 0.28), transparent 70%),
+        radial-gradient(ellipse 55% 40% at 85% 70%, rgba(232, 150, 150, 0.22), transparent 70%),
+        radial-gradient(ellipse 80% 50% at 50% 55%, rgba(255, 244, 236, 0.6), transparent 75%),
+        var(--paper);
+      color: var(--ink);
+      font-family: 'Shippori Mincho', serif;
+      z-index: 10;
+    }
+    #question[hidden] { display: none; }
+
+    /* 和紙・絹の粒子感 */
+    #question::after {
+      content: '';
+      position: absolute; inset: 0;
+      pointer-events: none;
+      opacity: 0.35;
+      mix-blend-mode: multiply;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.55 0 0 0 0 0.4 0 0 0 0 0.36 0 0 0 0.5 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    }
+
+    #question .scene {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+    }
+
+    /* 質問と撮影前の案内は同じ背景の上で中身だけ切り替える */
+    #question .step { display: contents; }
+    #question .step[hidden] { display: none; }
+    #question h1, #question .choices, #question .count { position: relative; z-index: 1; }
+    #question h1 {
+      font-size: clamp(26px, 4.4vw, 52px);
+      font-weight: 500;
+      letter-spacing: 0.06em;
+      text-align: center;
+      text-shadow: 0 0 18px var(--paper), 0 0 6px var(--paper);
+    }
+    #question .choices { display: flex; gap: 28px; }
+    #question .printing-text { margin-top: auto; }
+    #question .dots span { animation: dot-blink 1.4s infinite; opacity: 0; }
+    #question .dots span:nth-child(2) { animation-delay: 0.2s; }
+    #question .dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes dot-blink {
+      0%, 20% { opacity: 0; }
+      40%, 80% { opacity: 1; }
+      100% { opacity: 0; }
+    }
+    /* 月老のおみくじ（籤） */
+    #question .slip {
+      position: absolute; left: 50%; top: 44%;
+      z-index: 1;
+      height: 66vh;
+      filter: drop-shadow(0 20px 40px rgba(110, 50, 45, 0.3));
+      animation: slip-print 1.2s cubic-bezier(0.2, 0.8, 0.2, 1) both,
+                 slip-float 4s ease-in-out 1.2s infinite;
+    }
+    @keyframes slip-print {
+      from { opacity: 0; transform: translate(-50%, -38%); }
+      to   { opacity: 1; transform: translate(-50%, -50%); }
+    }
+    @keyframes slip-float {
+      0%, 100% { transform: translate(-50%, -50%) rotate(-1deg); }
+      50%      { transform: translate(-50%, -52%) rotate(1deg); }
+    }
+    #question .count {
+      font-size: clamp(56px, 9vw, 104px);
+      line-height: 1;
+      color: #7a3b36;
+      text-shadow: 0 0 18px var(--paper), 0 0 6px var(--paper);
+    }
+    #question button {
+      min-width: 150px; padding: 12px 36px;
+      font: 500 20px 'Shippori Mincho', serif;
+      letter-spacing: 0.2em;
+      color: #7a3b36;
+      background: rgba(255, 248, 242, 0.55);
+      border: 1px solid rgba(168, 92, 84, 0.45);
+      border-radius: 6px;
+      box-shadow: 0 2px 14px rgba(200, 120, 110, 0.15);
+      backdrop-filter: blur(3px);
+      cursor: pointer;
+      transition: background 0.4s, box-shadow 0.4s;
+    }
+    #question button:hover {
+      background: rgba(240, 186, 172, 0.45);
+      box-shadow: 0 2px 20px rgba(216, 38, 43, 0.18);
+    }
+
+    /* 撚った紐の立体感：暗い芯・本体・撚り目・ハイライトの重ね */
+    .cord-shade { stroke: #8c1418; stroke-width: 9; }
+    .cord-body  { stroke: var(--thread); stroke-width: 7; }
+    .cord-twist { stroke: #f06a5f; stroke-width: 7; stroke-dasharray: 2.4 4.6; opacity: 0.55; }
+    .cord-hi    { stroke: #ffb3a8; stroke-width: 1.6; opacity: 0.7; transform: translate(-0.8px, -1.6px); }
+
+    /* 舞う花びら */
+    .petal {
+      position: absolute; top: -6vh;
+      left: var(--x);
+      width: 14px; height: 10px;
+      border-radius: 80% 0 80% 0;
+      background: linear-gradient(135deg, #f4b3a6, #f9d8cf);
+      opacity: 0.8;
+      animation: petal-fall var(--dur) linear var(--delay) infinite;
+      pointer-events: none;
+    }
+    @keyframes petal-fall {
+      0%   { transform: translate(0, 0) rotate(0deg) scale(var(--s)); }
+      50%  { transform: translate(6vw, 55vh) rotate(200deg) scale(var(--s)); }
+      100% { transform: translate(-2vw, 115vh) rotate(420deg) scale(var(--s)); }
+    }
+
+    #message {
+      z-index: 20;
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      color: #fff; text-align: center; line-height: 1.6;
+      padding: 16px 24px; border-radius: 12px;
+      background: rgba(0, 0, 0, 0.6);
+    }
+    #message[hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <!-- 共通の部品（赤い紐の影・盤長結） -->
+    <svg class="shared-defs" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <filter id="cord-shadow">
+          <feDropShadow dx="0" dy="2.5" stdDeviation="2" flood-color="#7a1a1a" flood-opacity="0.3" />
+        </filter>
+
+        <!-- 盤長結（ローカル座標。45度回転して使う） -->
+        <g id="knot" fill="none">
+          <rect x="-36" y="-36" width="72" height="72" rx="6" />
+          <path d="M-12 -36 V36 M12 -36 V36 M-36 -12 H36 M-36 12 H36" />
+          <circle cx="-46" cy="-46" r="10" />
+          <circle cx="46" cy="-46" r="10" />
+          <circle cx="-46" cy="46" r="10" />
+          <circle cx="46" cy="46" r="10" />
+        </g>
+      </defs>
+    </svg>
+
+    <!-- 撮影される写真（カメラ映像・月老・フレーム）。撮影後はこのまま縮めて印刷中の表示にする -->
+    <div id="photo">
+      <video id="camera" autoplay playsinline muted></video>
+
+      <img id="buddy" src="yuelao.png" alt="月下老人" />
+
+      <!-- カメラ画面の赤い紐のフレーム（四隅に盤長結） -->
+      <svg id="frame" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+        <g filter="url(#cord-shadow)">
+          <rect id="frame-cord" x="0" y="0" width="100%" height="100%" rx="26" fill="none" />
+          <use href="#frame-cord" class="cord-shade" /><use href="#frame-cord" class="cord-body" />
+          <use href="#frame-cord" class="cord-twist" /><use href="#frame-cord" class="cord-hi" />
+          <svg x="0" y="0" overflow="visible"><g transform="translate(8 8) rotate(45) scale(0.5)">
+            <use href="#knot" class="cord-shade" /><use href="#knot" class="cord-body" /><use href="#knot" class="cord-twist" /><use href="#knot" class="cord-hi" />
+          </g></svg>
+          <svg x="100%" y="0" overflow="visible"><g transform="translate(-8 8) rotate(45) scale(0.5)">
+            <use href="#knot" class="cord-shade" /><use href="#knot" class="cord-body" /><use href="#knot" class="cord-twist" /><use href="#knot" class="cord-hi" />
+          </g></svg>
+          <svg x="0" y="100%" overflow="visible"><g transform="translate(8 -8) rotate(45) scale(0.5)">
+            <use href="#knot" class="cord-shade" /><use href="#knot" class="cord-body" /><use href="#knot" class="cord-twist" /><use href="#knot" class="cord-hi" />
+          </g></svg>
+          <svg x="100%" y="100%" overflow="visible"><g transform="translate(-8 -8) rotate(45) scale(0.5)">
+            <use href="#knot" class="cord-shade" /><use href="#knot" class="cord-body" /><use href="#knot" class="cord-twist" /><use href="#knot" class="cord-hi" />
+          </g></svg>
+        </g>
+      </svg>
+
+      <p id="shot-count" aria-live="polite" hidden></p>
+      <div id="flash"></div>
+    </div>
+
+    <video id="intro" src="intro.mp4" playsinline></video>
+
+    <div id="question" hidden>
+      <svg class="scene" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="ink-far" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#6e5a5a" stop-opacity="0.26" />
+            <stop offset="1" stop-color="#6e5a5a" stop-opacity="0" />
+          </linearGradient>
+          <linearGradient id="ink-near" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#4f3c3c" stop-opacity="0.42" />
+            <stop offset="0.7" stop-color="#4f3c3c" stop-opacity="0.08" />
+            <stop offset="1" stop-color="#4f3c3c" stop-opacity="0" />
+          </linearGradient>
+          <linearGradient id="mist" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#F6E3D6" stop-opacity="0" />
+            <stop offset="0.5" stop-color="#F8E8DE" stop-opacity="0.9" />
+            <stop offset="1" stop-color="#F6E3D6" stop-opacity="0" />
+          </linearGradient>
+          <linearGradient id="mist-bottom" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#F6E3D6" stop-opacity="0" />
+            <stop offset="1" stop-color="#F6E3D6" stop-opacity="0.95" />
+          </linearGradient>
+          <radialGradient id="halo">
+            <stop offset="0" stop-color="#fff6e8" stop-opacity="0.95" />
+            <stop offset="1" stop-color="#fff6e8" stop-opacity="0" />
+          </radialGradient>
+          <filter id="blur-far"><feGaussianBlur stdDeviation="4" /></filter>
+          <filter id="blur-near"><feGaussianBlur stdDeviation="1.6" /></filter>
+          <filter id="glow"><feGaussianBlur stdDeviation="1.5" /></filter>
+
+          <!-- 祥雲（渦巻きのある雲） -->
+          <g id="cloud" fill="#f3cbbd" stroke="#e29a8a" stroke-width="2.2" stroke-linecap="round">
+            <path d="M-70 10 Q-60 -10 -36 -6 Q-30 -34 0 -30 Q28 -40 40 -12 Q66 -18 74 6 Q78 18 60 18 L-60 18 Q-78 18 -70 10 Z" />
+            <path fill="none" d="M-36 -6 q6 10 16 4 q6 -6 -2 -10 q-6 -2 -6 4" />
+            <path fill="none" d="M40 -12 q-4 12 -16 8 q-6 -4 0 -8 q4 -2 6 2" />
+            <path fill="none" d="M0 -30 q6 10 -4 16 q-8 2 -6 -6" />
+            <path fill="none" d="M-120 26 Q-40 34 20 28 Q80 22 130 30" />
+          </g>
+
+          <!-- 赤い糸（盤長結の左右の耳につながる） -->
+          <path id="thread-l" fill="none" d="M-20 610 C 260 650 520 380 725 450" />
+          <path id="thread-r" fill="none" d="M875 450 C 1060 530 1300 400 1620 500" />
+
+        </defs>
+
+        <!-- 遠景の山並み -->
+        <path filter="url(#blur-far)" fill="url(#ink-far)"
+              d="M0 560 Q80 470 150 500 Q230 380 320 430 Q380 340 450 400 Q520 450 600 470 Q700 420 780 480 Q900 430 1000 470 Q1080 380 1160 420 Q1240 300 1340 380 Q1420 430 1500 400 Q1560 370 1600 420 L1600 660 L0 660 Z" />
+        <!-- 近景の崖（左） -->
+        <path filter="url(#blur-near)" fill="url(#ink-near)"
+              d="M0 720 L0 220 Q40 190 70 250 Q110 170 160 290 Q200 350 230 320 Q290 410 330 470 Q380 560 430 610 Q300 680 0 720 Z" />
+        <!-- 近景の丘と廟（右） -->
+        <g filter="url(#blur-near)">
+          <path fill="url(#ink-near)"
+                d="M1600 740 L1600 380 Q1540 330 1480 410 Q1420 380 1360 430 Q1300 470 1220 490 Q1150 540 1070 570 Q1200 660 1600 740 Z" />
+          <g fill="#a8645e" opacity="0.5">
+            <path d="M1405 334 Q1440 312 1475 334 Z" />
+            <path d="M1372 326 Q1390 338 1410 336 L1470 336 Q1490 338 1508 326 Q1496 342 1480 346 L1400 346 Q1384 342 1372 326 Z" />
+            <rect x="1404" y="346" width="72" height="18" />
+            <path d="M1350 364 Q1370 378 1394 376 L1486 376 Q1510 378 1530 364 Q1516 384 1496 388 L1384 388 Q1364 384 1350 364 Z" />
+            <rect x="1390" y="388" width="100" height="34" />
+          </g>
+        </g>
+
+        <!-- 霧 -->
+        <rect x="0" y="380" width="1600" height="200" fill="url(#mist)" />
+        <rect x="0" y="560" width="1600" height="340" fill="url(#mist-bottom)" />
+
+        <!-- 祥雲 -->
+        <g opacity="0.75">
+          <use href="#cloud" transform="translate(190 190) scale(1.15)" />
+          <use href="#cloud" transform="translate(1310 150) scale(0.95)" />
+          <use href="#cloud" transform="translate(420 740) scale(0.85)" />
+          <use href="#cloud" transform="translate(1220 690) scale(1.05)" />
+        </g>
+
+        <!-- 結び目の光 -->
+        <circle cx="800" cy="450" r="150" fill="url(#halo)" />
+        <g id="rays" stroke="#e8a060" stroke-width="2.2" stroke-linecap="round" opacity="0.75" filter="url(#glow)"></g>
+
+        <!-- 赤い糸 -->
+        <g filter="url(#cord-shadow)">
+          <use href="#thread-l" class="cord-shade" /><use href="#thread-l" class="cord-body" />
+          <use href="#thread-l" class="cord-twist" /><use href="#thread-l" class="cord-hi" />
+          <use href="#thread-r" class="cord-shade" /><use href="#thread-r" class="cord-body" />
+          <use href="#thread-r" class="cord-twist" /><use href="#thread-r" class="cord-hi" />
+
+          <g transform="translate(800 450) rotate(45)">
+            <use href="#knot" class="cord-shade" /><use href="#knot" class="cord-body" />
+            <use href="#knot" class="cord-twist" /><use href="#knot" class="cord-hi" />
+          </g>
+
+          <!-- 房 -->
+          <circle cx="800" cy="534" r="7" fill="#D8262B" stroke="#8c1418" stroke-width="1.5" />
+          <rect x="793" y="541" width="14" height="10" rx="2" fill="#b81c21" />
+          <path d="M793 551 L784 628 Q800 634 816 628 L807 551 Z" fill="#D8262B" />
+          <path d="M796 556 L790 626 M800 556 L800 630 M804 556 L810 626" stroke="#8c1418" stroke-width="1" opacity="0.45" />
+        </g>
+      </svg>
+
+      <div class="step" id="step-ask">
+        <h1>Do you know each other？</h1>
+        <div class="choices">
+          <button id="yes" type="button">YES</button>
+          <button id="no" type="button">NO</button>
+        </div>
+      </div>
+
+      <div class="step" id="step-ready" hidden>
+        <h1>Let's take a photo with Yue Lao！</h1>
+        <p class="count" id="count" aria-live="polite"></p>
+      </div>
+
+      <div class="step" id="step-fortune" hidden>
+        <img class="slip" src="fortune-slip.png" alt="月老姻緣籤" />
+        <h1 class="printing-text">Printing fortune slips for you all<span class="dots"><span>.</span><span>.</span><span>.</span></span></h1>
+      </div>
+
+      <div class="step" id="step-printing" hidden>
+        <h1 class="printing-text">Printing photos<span class="dots"><span>.</span><span>.</span><span>.</span></span></h1>
+      </div>
+    </div>
+
+    <p id="message" hidden></p>
+  </div>
+
+  <script>
+    const video = document.getElementById('camera');
+    const message = document.getElementById('message');
+
+    const showMessage = (text) => {
+      message.textContent = text;
+      message.hidden = false;
+    };
+
+    const describeError = (err) => {
+      if (!(err instanceof DOMException)) return `カメラを起動できませんでした: ${String(err)}`;
+      switch (err.name) {
+        case 'NotAllowedError': return 'カメラの使用が許可されていません。ブラウザの設定から許可してください。';
+        case 'NotFoundError': return 'カメラが見つかりません。';
+        case 'NotReadableError': return 'カメラが他のアプリで使用中の可能性があります。';
+        default: return `カメラを起動できませんでした: ${err.name} - ${err.message}`;
+      }
+    };
+
+    const startCamera = async () => {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        showMessage('このブラウザ／環境ではカメラを利用できません（https または localhost で開いてください）。');
+        return;
+      }
+      try {
+        video.srcObject = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 1920 }, height: { ideal: 1080 } },
+          audio: false,
+        });
+      } catch (err) {
+        console.error(err);
+        showMessage(describeError(err));
+      }
+    };
+
+    const intro = document.getElementById('intro');
+    const question = document.getElementById('question');
+
+    // 結び目のまわりの放射状の光の線
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    const createRay = (i, total) => {
+      const angle = (i / total) * Math.PI * 2;
+      const [inner, outer] = i % 2 === 0 ? [96, 128] : [100, 114];
+      const line = document.createElementNS(SVG_NS, 'line');
+      line.setAttribute('x1', String(800 + Math.cos(angle) * inner));
+      line.setAttribute('y1', String(450 + Math.sin(angle) * inner));
+      line.setAttribute('x2', String(800 + Math.cos(angle) * outer));
+      line.setAttribute('y2', String(450 + Math.sin(angle) * outer));
+      return line;
+    };
+    const RAY_COUNT = 24;
+    document.getElementById('rays')
+      .append(...Array.from({ length: RAY_COUNT }, (_, i) => createRay(i, RAY_COUNT)));
+
+    // 舞う花びら（位置・速さはばらけるよう固定の係数で決める）
+    const createPetal = (i) => {
+      const petal = document.createElement('span');
+      petal.className = 'petal';
+      petal.style.setProperty('--x', `${(i * 37) % 100}%`);
+      petal.style.setProperty('--dur', `${11 + (i * 7) % 9}s`);
+      petal.style.setProperty('--delay', `${-((i * 13) % 17)}s`);
+      petal.style.setProperty('--s', String(0.7 + ((i * 5) % 7) / 10));
+      return petal;
+    };
+    question.append(...Array.from({ length: 14 }, (_, i) => createPetal(i)));
+
+    const finishIntro = () => {
+      intro.hidden = true;
+      question.hidden = false;
+    };
+
+    // 1秒ごとに数字を減らし、0になったら onDone を呼ぶ
+    const runCountdown = (el, seconds, onDone) => {
+      const show = (n) => {
+        el.textContent = String(n);
+        el.animate(
+          [{ opacity: 0, transform: 'scale(1.25)' }, { opacity: 1, transform: 'scale(1)' }],
+          { duration: 500, easing: 'ease-out' },
+        );
+      };
+      let remaining = seconds;
+      show(remaining);
+      const timer = setInterval(() => {
+        remaining -= 1;
+        if (remaining > 0) {
+          show(remaining);
+          return;
+        }
+        clearInterval(timer);
+        onDone();
+      }, 1000);
+    };
+
+    const COUNTDOWN_SECONDS = 5;
+    const SHOT_COUNTDOWN_SECONDS = 6;
+
+    const photo = document.getElementById('photo');
+    const PRINTING_DELAY_MS = 1000;
+
+    // 写真を縮め、まわりの余白に「Printing photos...」を出す
+    const showPrinting = () => {
+      document.getElementById('step-ready').hidden = true;
+      document.getElementById('step-printing').hidden = false;
+      question.hidden = false;
+      photo.classList.add('printing');
+      photo.animate(
+        [{ transform: 'none' }, { transform: 'translateY(-7%) scale(0.62)' }],
+        { duration: 1200, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)', fill: 'forwards' },
+      );
+    };
+
+    // 撮影したように見せるフラッシュ（実際の撮影はまだしない）
+    const playShutterEffect = () => {
+      // ライブ映像を一時停止して、その瞬間のコマで止める
+      video.pause();
+      document.getElementById('flash').animate(
+        [{ opacity: 0 }, { opacity: 1, offset: 0.08 }, { opacity: 0 }],
+        { duration: 700, easing: 'ease-out' },
+      );
+      photo.animate(
+        [{ transform: 'scale(1)' }, { transform: 'scale(0.985)', offset: 0.15 }, { transform: 'scale(1)' }],
+        { duration: 400, easing: 'ease-out' },
+      );
+    };
+
+    const startShotCountdown = () => {
+      const shotCount = document.getElementById('shot-count');
+      shotCount.hidden = false;
+      runCountdown(shotCount, SHOT_COUNTDOWN_SECONDS, () => {
+        shotCount.hidden = true;
+        playShutterEffect();
+        setTimeout(showPrinting, PRINTING_DELAY_MS);
+      });
+    };
+    document.getElementById('yes').addEventListener('click', () => {
+      document.getElementById('step-ask').hidden = true;
+      document.getElementById('step-ready').hidden = false;
+      runCountdown(document.getElementById('count'), COUNTDOWN_SECONDS, () => {
+        question.hidden = true;
+        startShotCountdown();
+      });
+    });
+    document.getElementById('no').addEventListener('click', () => {
+      document.getElementById('step-ask').hidden = true;
+      document.getElementById('step-fortune').hidden = false;
+    });
+
+    // 自動再生は音ありだとブラウザに拒否されることがあるので、その場合はミュートで再生
+    const playIntro = async () => {
+      try {
+        await intro.play();
+      } catch {
+        intro.muted = true;
+        try {
+          await intro.play();
+        } catch (err) {
+          console.error('イントロ動画を再生できませんでした', err);
+          finishIntro();
+        }
+      }
+    };
+
+    intro.addEventListener('ended', finishIntro);
+    intro.addEventListener('error', () => {
+      console.error('イントロ動画を読み込めませんでした', intro.error);
+      finishIntro();
+    });
+
+    // カメラ許可は最初に求め、裏で起動しておく
+    startCamera();
+    playIntro();
+  </script>
+</body>
+</html>
